@@ -423,3 +423,13 @@ below has been compiled or run. A reviewer on macOS must check:
   queue does not add or remove any libimobiledevice capability.
 - Widget ring sizes/offsets, colors, charging bolt, and percentage placement
   were not visually tested. Only static code review was possible.
+
+## Accessory power notifications
+
+Mac-local mouse, keyboard, and trackpad batteries can refresh from powerd's
+accessory channel (`com.apple.system.accpowersources.*`) without subscribing to
+the public main-battery notifications. iPhone, iPad, and Watch polling is
+unchanged. Apple Watch is still read through iPhone lockdown (`comptest`);
+the Watch accessory category is ignored. Details and the Mac checklist are in
+`docs/mac-accessory-power.md`. `scripts/check-accessory-power.sh` is a Linux-side
+static check only.

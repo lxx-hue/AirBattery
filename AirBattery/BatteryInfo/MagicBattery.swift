@@ -137,7 +137,10 @@ class MagicBattery {
         return def
     }
     
-    func readMagicBattery(object: io_object_t) {
+    /// `onlyIfChanged` is used by the accessory-power listener. The periodic
+    /// fallback calls this with the defaults and still rewrites `lastUpdate`.
+    @discardableResult
+    func readMagicBattery(object: io_object_t, onlyIfChanged: Bool = false, bag: HIDIdentityBag? = nil) -> Bool {
         var mac = ""
         var type = "hid"
         var status = 0
@@ -169,82 +172,67 @@ class MagicBattery {
                 productName = getDeviceName(mac, productName)
             }
         }
-        if !productName.contains("Internal"){
-            AirBatteryModel.updateDevice(Device(deviceID: mac, deviceType: type, deviceName: productName, batteryLevel: percent, isCharging: status, parentName: deviceName, lastUpdate: lastUpdate))
+        if productName.contains("Internal") { return false }
+        if !mac.isEmpty { bag?.ids.insert(AccessoryPowerRules.normalizeID(mac)) }
+        if !productName.isEmpty { bag?.names.insert(productName) }
+        if onlyIfChanged {
+            let existing = (!mac.isEmpty ? AirBatteryModel.getByID(mac) : nil) ?? (productName.isEmpty ? nil : AirBatteryModel.getByName(productName))
+            if let existing = existing {
+                if AccessoryPowerRules.protectedDeviceTypes.contains(existing.deviceType) { return false }
+                if existing.batteryLevel == percent && existing.isCharging == status { return false }
+            }
         }
+        AirBatteryModel.updateDevice(Device(deviceID: mac, deviceType: type, deviceName: productName, batteryLevel: percent, isCharging: status, parentName: deviceName, lastUpdate: lastUpdate))
+        return true
     }
 
-    func getMagicBattery() {
+    @discardableResult
+    func getMagicBattery(onlyIfChanged: Bool = false, bag: HIDIdentityBag? = nil) -> Bool {
+        forEachMatchingService("AppleDeviceManagementHIDEventService", onlyIfChanged: onlyIfChanged, bag: bag)
+    }
+
+    @discardableResult
+    func getOldMagicKeyboard(onlyIfChanged: Bool = false, bag: HIDIdentityBag? = nil) -> Bool {
+        forEachMatchingService("AppleBluetoothHIDKeyboard", onlyIfChanged: onlyIfChanged, bag: bag)
+    }
+
+    @discardableResult
+    func getOldMagicTrackpad(onlyIfChanged: Bool = false, bag: HIDIdentityBag? = nil) -> Bool {
+        forEachMatchingService("BNBTrackpadDevice", onlyIfChanged: onlyIfChanged, bag: bag)
+    }
+
+    @discardableResult
+    func getOldMagicMouse(onlyIfChanged: Bool = false, bag: HIDIdentityBag? = nil) -> Bool {
+        forEachMatchingService("BNBMouseDevice", onlyIfChanged: onlyIfChanged, bag: bag)
+    }
+
+    // IOIteratorNext returns a retained object. Release each one. The previous
+    // four copies only released the terminating 0, so a notify-driven walk
+    // would have leaked an io_object per device.
+    @discardableResult
+    private func forEachMatchingService(_ className: String, onlyIfChanged: Bool, bag: HIDIdentityBag?) -> Bool {
         var serialPortIterator = io_iterator_t()
-        var object : io_object_t
         let masterPort: mach_port_t
         if #available(macOS 12.0, *) {
-            masterPort = kIOMainPortDefault // New name in macOS 12 and higher
+            masterPort = kIOMainPortDefault
         } else {
-            masterPort = kIOMasterPortDefault // Old name in macOS 11 and lower
+            masterPort = kIOMasterPortDefault
         }
-        let matchingDict : CFDictionary = IOServiceMatching("AppleDeviceManagementHIDEventService")
+        let matchingDict: CFDictionary = IOServiceMatching(className)
         let kernResult = IOServiceGetMatchingServices(masterPort, matchingDict, &serialPortIterator)
-        
+        var changed = false
         if KERN_SUCCESS == kernResult {
-            repeat {
-                object = IOIteratorNext(serialPortIterator)
-                if object != 0 { readMagicBattery(object: object) }
-            } while object != 0
-            IOObjectRelease(object)
+            while true {
+                let object = IOIteratorNext(serialPortIterator)
+                if object == 0 { break }
+                if readMagicBattery(object: object, onlyIfChanged: onlyIfChanged, bag: bag) {
+                    changed = true
+                }
+                IOObjectRelease(object)
+            }
         }
         IOObjectRelease(serialPortIterator)
-    }
-    
-    func getOldMagicKeyboard() {
-        var serialPortIterator = io_iterator_t()
-        var object : io_object_t
-        let masterPort: mach_port_t
-        if #available(macOS 12.0, *) { masterPort = kIOMainPortDefault } else { masterPort = kIOMasterPortDefault }
-        let matchingDict : CFDictionary = IOServiceMatching("AppleBluetoothHIDKeyboard")
-        let kernResult = IOServiceGetMatchingServices(masterPort, matchingDict, &serialPortIterator)
-        if KERN_SUCCESS == kernResult {
-            repeat {
-                object = IOIteratorNext(serialPortIterator)
-                if object != 0 { readMagicBattery(object: object) }
-            } while object != 0
-            IOObjectRelease(object)
-        }
-        IOObjectRelease(serialPortIterator)
-    }
-    
-    func getOldMagicTrackpad() {
-        var serialPortIterator = io_iterator_t()
-        var object : io_object_t
-        let masterPort: mach_port_t
-        if #available(macOS 12.0, *) { masterPort = kIOMainPortDefault } else { masterPort = kIOMasterPortDefault }
-        let matchingDict : CFDictionary = IOServiceMatching("BNBTrackpadDevice")
-        let kernResult = IOServiceGetMatchingServices(masterPort, matchingDict, &serialPortIterator)
-        if KERN_SUCCESS == kernResult {
-            repeat {
-                object = IOIteratorNext(serialPortIterator)
-                if object != 0 { readMagicBattery(object: object) }
-            } while object != 0
-            IOObjectRelease(object)
-        }
-        IOObjectRelease(serialPortIterator)
-    }
-    
-    func getOldMagicMouse() {
-        var serialPortIterator = io_iterator_t()
-        var object : io_object_t
-        let masterPort: mach_port_t
-        if #available(macOS 12.0, *) { masterPort = kIOMainPortDefault } else { masterPort = kIOMasterPortDefault }
-        let matchingDict : CFDictionary = IOServiceMatching("BNBMouseDevice")
-        let kernResult = IOServiceGetMatchingServices(masterPort, matchingDict, &serialPortIterator)
-        if KERN_SUCCESS == kernResult {
-            repeat {
-                object = IOIteratorNext(serialPortIterator)
-                if object != 0 { readMagicBattery(object: object) }
-            } while object != 0
-            IOObjectRelease(object)
-        }
-        IOObjectRelease(serialPortIterator)
+        return changed
     }
     
     func getAirpods() {
