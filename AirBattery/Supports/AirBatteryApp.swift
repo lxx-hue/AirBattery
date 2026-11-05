@@ -444,8 +444,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         btdBattery.startScan()
         MagicBattery.shared.startScan()
         IDeviceBattery.shared.startScan()
-        // Accessory notify is additive. iPhone/iPad/Watch polling is unchanged.
-        AccessoryPowerMonitor.shared.start()
         
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
             _ = AirBatteryModel.singleDeviceName()
@@ -518,7 +516,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     
     func applicationWillTerminate(_ notification: Notification) {
         if let act = keepAliveActivity { ProcessInfo.processInfo.endActivity(act) }
-        AccessoryPowerMonitor.shared.stop()
         widgetRefreshTimer?.invalidate()
 
         _ = process(path: "/usr/bin/killall", arguments: ["idevicesyslog"])

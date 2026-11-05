@@ -424,12 +424,13 @@ below has been compiled or run. A reviewer on macOS must check:
 - Widget ring sizes/offsets, colors, charging bolt, and percentage placement
   were not visually tested. Only static code review was possible.
 
-## Accessory power notifications
+## Accessory power listener withdrawn
 
-Mac-local mouse, keyboard, and trackpad batteries can refresh from powerd's
-accessory channel (`com.apple.system.accpowersources.*`) without subscribing to
-the public main-battery notifications. iPhone, iPad, and Watch polling is
-unchanged. Apple Watch is still read through iPhone lockdown (`comptest`);
-the Watch accessory category is ignored. Details and the Mac checklist are in
-`docs/mac-accessory-power.md`. `scripts/check-accessory-power.sh` is a Linux-side
-static check only.
+The follow-up that subscribed to the private accessory power-source names and
+called `IOPSCopyPowerSourcesByType` was removed. Those names live in
+`IOPowerSourcesPrivate.h`. A public `notify(3)` registration does not make
+them public. No public HID/IOKit interest path was shown to fire when
+`BatteryPercent` or `BatteryStatusFlags` changes on
+`AppleDeviceManagementHIDEventService`, so that listener was not replaced
+with a guess. The installed custom tree, including PrivateWidgetKit, stays.
+See `docs/mac-accessory-power.md`.
