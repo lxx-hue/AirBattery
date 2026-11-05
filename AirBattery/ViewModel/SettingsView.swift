@@ -45,6 +45,10 @@ struct SettingsView: View {
         }
         .frame(width: 600, height: 440)
         .navigationTitle("AirBattery Settings")
+        .onAppear {
+            // Re-track a Settings window that SwiftUI reused on a later open.
+            SettingsWindowState.shared.retrackWindow()
+        }
     }
 }
 
@@ -102,9 +106,8 @@ struct GeneralView: View {
                     }
                 }.onAppear { cltInstalled = CommandLineTool.isInstalled() }
             }.padding(.top, -20)
-            SGroupBox(label: "Update") { UpdaterSettingsView(updater: updaterController.updater) }
+            // Update section removed: this is a locally patched build; upstream updates would overwrite it.
             VStack(spacing: 8) {
-                CheckForUpdatesView(updater: updaterController.updater)
                 if let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
                     Text("AirBattery v\(appVersion)")
                         .font(.subheadline)
@@ -367,8 +370,10 @@ struct WidgetView: View {
                 }
                 Divider().opacity(0.5)
                 SButton("Reload All Widgets", buttonTitle: "Reload") {
-                    AirBatteryModel.writeData()
-                    WidgetCenter.shared.reloadAllTimelines()
+                    // Force a fresh iDevice/Bluetooth scan and rewrite the
+                    // shared JSON (which also prunes stale devices) before
+                    // asking WidgetKit to reload.
+                    refreshWidgetData(includeIDevices: true)
                 }
             }
         }

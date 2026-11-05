@@ -207,14 +207,10 @@ struct MultiBatteryView: View {
         }
         .onReceive(dockTimer) {_ in IDeviceBattery.shared.scanDevices() }
         .onReceive(widgetDataTimer) {_ in
-            SPBluetoothDataModel.shared.refeshData (completion: { result in
-                DispatchQueue.global(qos: .background).async {
-                    MagicBattery.shared.scanDevices()
-                    AirBatteryModel.writeData()
-                }
-            }, error: {
-                AirBatteryModel.writeData()
-            })
+            // The 5 s dockTimer already drives iDevice scans; this 24 s pass
+            // only refreshes Bluetooth JSON. The app-level timer handles the
+            // iDevice JSON refresh when no view is around.
+            refreshWidgetData(includeIDevices: false, reloadWidgets: false)
         }
         .onReceive(nearCastTimer) {_ in
             if nearCast && ncGroupID != ""{
@@ -307,7 +303,8 @@ struct popover: View {
     
     var body: some View {
         ZStack{
-            if fromDock { Color.clear.background(BlurView(material: .menu)) }
+            // Always use system material so menu-bar popover matches dock glass look.
+            Color.clear.background(BlurView(material: .menu))
             VStack(spacing: 0){
                 if !fromDock {
                     Color.clear
@@ -366,20 +363,38 @@ struct popover: View {
                     .focusable(false)
                     .buttonStyle(PlainButtonStyle())
                     .onHover{ hovering in overInfoButton = hovering }
-                    Button(action: {
-                        dockWindow.orderOut(nil)
-                        statusBarItem.menu?.cancelTracking()
-                        openSettingPanel()
-                    }, label: {
-                        Image(systemName: "gearshape")
-                            .font(.system(size: 13.6, weight: .light))
-                            .frame(width: 14, height: 14, alignment: .center)
-                            .foregroundColor(overSettButton ? .accentColor : .secondary)
-                            .opacity(overSettButton ? 1 : 0.7)
-                    })
-                    .focusable(false)
-                    .buttonStyle(PlainButtonStyle())
-                    .onHover{ hovering in overSettButton = hovering }
+                    if #available(macOS 14.0, *) {
+                        OpenSettingsButton(onClick: {
+                            dockWindow.orderOut(nil)
+                            if menuPopover.isShown { menuPopover.performClose(nil) }
+                            statusBarItem.menu?.cancelTracking()
+                            SettingsWindowState.shared.prepare()
+                        }) {
+                            Image(systemName: "gearshape")
+                                .font(.system(size: 13.6, weight: .light))
+                                .frame(width: 14, height: 14, alignment: .center)
+                                .foregroundColor(overSettButton ? .accentColor : .secondary)
+                                .opacity(overSettButton ? 1 : 0.7)
+                        }
+                        .focusable(false)
+                        .buttonStyle(PlainButtonStyle())
+                        .onHover{ hovering in overSettButton = hovering }
+                    } else {
+                        Button(action: {
+                            dockWindow.orderOut(nil)
+                            statusBarItem.menu?.cancelTracking()
+                            openSettingPanel()
+                        }, label: {
+                            Image(systemName: "gearshape")
+                                .font(.system(size: 13.6, weight: .light))
+                                .frame(width: 14, height: 14, alignment: .center)
+                                .foregroundColor(overSettButton ? .accentColor : .secondary)
+                                .opacity(overSettButton ? 1 : 0.7)
+                        })
+                        .focusable(false)
+                        .buttonStyle(PlainButtonStyle())
+                        .onHover{ hovering in overSettButton = hovering }
+                    }
                     Spacer()
                     if nearCast {
                         Button(action: {
@@ -986,13 +1001,103 @@ func openAboutPanel() {
 
 func openSettingPanel() {
     dockWindow.orderOut(nil)
-    NSApp.activate(ignoringOtherApps: true)
-    if #available(macOS 14, *) {
-        NSApp.mainMenu?.items.first?.submenu?.item(at: 2)?.performAction()
-    }else if #available(macOS 13, *) {
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-    } else {
-        NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+    if menuPopover.isShown { menuPopover.performClose(nil) }
+    SettingsWindowState.shared.prepare()
+
+    // If the window is already alive, just bring it forward.
+    if SettingsWindowState.shared.window != nil {
+        SettingsWindowState.shared.bringToFront()
+        return
+    }
+
+    // On macOS 14+ the old responder-chain selectors are unreliable. Prefer
+    // the Settings menu item installed by SwiftUI (the same action SettingsLink
+    // uses). The selector fallback is only useful on older systems; on 14+
+    // showSettingsWindow: is a no-op.
+    let openedFromMenu = performSettingsMenuItem()
+    if !openedFromMenu {
+        if #available(macOS 13, *) {
+            if #unavailable(macOS 14) {
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            }
+        } else {
+            NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+        }
+    }
+
+    // The SwiftUI Settings scene creates its window asynchronously.
+    DispatchQueue.main.async {
+        SettingsWindowState.shared.bringToFront()
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+        SettingsWindowState.shared.bringToFront()
+    }
+    // If no Settings window ever appeared, don't leave the accessory app in
+    // .regular mode (which would add a permanent Dock icon).
+    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+        SettingsWindowState.shared.restorePolicyIfNoWindow()
+    }
+}
+
+@discardableResult
+func performSettingsMenuItem() -> Bool {
+    guard let mainMenu = NSApp.mainMenu else { return false }
+    // First pass: exact selector names only. Second pass: the Cmd-, shortcut,
+    // so the heuristic can never take priority over a real Settings action.
+    if performSettingsMenuItem(in: mainMenu, shortcutOnly: false) { return true }
+    return performSettingsMenuItem(in: mainMenu, shortcutOnly: true)
+}
+
+private func performSettingsMenuItem(in menu: NSMenu, shortcutOnly: Bool) -> Bool {
+    for item in menu.items {
+        if let submenu = item.submenu, performSettingsMenuItem(in: submenu, shortcutOnly: shortcutOnly) {
+            return true
+        }
+        guard item.action != nil else { continue }
+        if shortcutOnly {
+            let isSettingsShortcut = item.keyEquivalent == "," && item.keyEquivalentModifierMask.contains(.command)
+            if isSettingsShortcut {
+                item.performAction()
+                return true
+            }
+        } else {
+            let actionName = NSStringFromSelector(item.action!)
+            if actionName == "showSettingsWindow:" || actionName == "showPreferencesWindow:" {
+                item.performAction()
+                return true
+            }
+        }
+    }
+    return false
+}
+
+@available(macOS 14.0, *)
+struct OpenSettingsButton<Label: View>: View {
+    @Environment(\.openSettings) private var openSettings
+    var onClick: () -> Void
+    var label: () -> Label
+
+    init(onClick: @escaping () -> Void, @ViewBuilder label: @escaping () -> Label) {
+        self.onClick = onClick
+        self.label = label
+    }
+
+    var body: some View {
+        Button {
+            onClick()
+            openSettings()
+            // If the environment action is unavailable in this hosting context
+            // (or the scene fails to open), fall back to the AppKit path.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                if SettingsWindowState.shared.window == nil {
+                    openSettingPanel()
+                } else {
+                    SettingsWindowState.shared.bringToFront()
+                }
+            }
+        } label: {
+            label()
+        }
     }
 }
 

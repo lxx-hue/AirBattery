@@ -10,6 +10,7 @@ import WidgetKit
 import UserNotifications
 import IOBluetooth
 import Sparkle
+import ServiceManagement
 
 let fd = FileManager.default
 let ud = UserDefaults.standard
@@ -25,6 +26,200 @@ let bleBattery = BLEBattery()
 let btdBattery = BTDBattery()
 var updateDelay = 1
 var keepAliveActivity: NSObjectProtocol? = nil
+let widgetRefreshQueue = DispatchQueue(label: "com.lihaoyun6.AirBattery.widget-refresh")
+
+private struct WidgetRefreshRequest {
+    let includeIDevices: Bool
+    let refreshBluetooth: Bool
+    let reloadWidgets: Bool
+    let completions: [() -> Void]
+}
+
+private let widgetRefreshStateLock = NSLock()
+private var widgetRefreshActive = false
+private var widgetRefreshPending = false
+private var pendingIncludeIDevices = false
+private var pendingRefreshBluetooth = false
+private var pendingReloadWidgets = false
+private var pendingWidgetRefreshCompletions: [() -> Void] = []
+
+// Take the merged flags of every request received so far. Must be called with
+// widgetRefreshStateLock held.
+private func takePendingWidgetRefreshLocked() -> WidgetRefreshRequest {
+    let request = WidgetRefreshRequest(
+        includeIDevices: pendingIncludeIDevices,
+        refreshBluetooth: pendingRefreshBluetooth,
+        reloadWidgets: pendingReloadWidgets,
+        completions: pendingWidgetRefreshCompletions
+    )
+    pendingIncludeIDevices = false
+    pendingRefreshBluetooth = false
+    pendingReloadWidgets = false
+    pendingWidgetRefreshCompletions.removeAll()
+    return request
+}
+
+// Force a fresh scan of the requested battery sources, prune devices that have
+// been offline longer than the configured window (done by getAll/writeData),
+// write the JSON the widget extension reads, then optionally reload widget
+// timelines.
+//
+// Requests are coalesced: at most one pass runs and at most one more pass is
+// queued. The flags of every request that arrives during a pass are OR-merged,
+// so a user-initiated Reload can never lose its reload.
+func refreshWidgetData(includeIDevices: Bool = true, refreshBluetooth: Bool = true, reloadWidgets: Bool = true, completion: (() -> Void)? = nil) {
+    widgetRefreshStateLock.lock()
+    pendingIncludeIDevices = pendingIncludeIDevices || includeIDevices
+    pendingRefreshBluetooth = pendingRefreshBluetooth || refreshBluetooth
+    pendingReloadWidgets = pendingReloadWidgets || reloadWidgets
+    if let completion = completion { pendingWidgetRefreshCompletions.append(completion) }
+
+    if widgetRefreshActive {
+        widgetRefreshPending = true
+        widgetRefreshStateLock.unlock()
+        return
+    }
+    let request = takePendingWidgetRefreshLocked()
+    widgetRefreshActive = true
+    widgetRefreshStateLock.unlock()
+
+    performWidgetRefresh(request)
+}
+
+private func performWidgetRefresh(_ request: WidgetRefreshRequest) {
+    widgetRefreshQueue.async {
+        if request.includeIDevices {
+            IDeviceBattery.shared.scanDevicesNow()
+        }
+        let finish = {
+            AirBatteryModel.writeData()
+            if request.reloadWidgets {
+                DispatchQueue.main.async {
+                    WidgetCenter.shared.reloadAllTimelines()
+                    for completion in request.completions { completion() }
+                }
+            } else {
+                DispatchQueue.main.async {
+                    for completion in request.completions { completion() }
+                }
+            }
+            finishWidgetRefreshPass()
+        }
+        if request.refreshBluetooth {
+            SPBluetoothDataModel.shared.refeshData(completion: { _ in
+                MagicBattery.shared.scanDevices()
+                finish()
+            }, error: {
+                finish()
+            })
+        } else {
+            finish()
+        }
+    }
+}
+
+// Schedule the single queued pass, if any, or mark the refresher idle. The
+// pending flag is reset while holding the lock so a request arriving at the
+// same time either joins this queued pass or starts a new one itself.
+private func finishWidgetRefreshPass() {
+    widgetRefreshStateLock.lock()
+    if widgetRefreshPending {
+        widgetRefreshPending = false
+        let request = takePendingWidgetRefreshLocked()
+        widgetRefreshStateLock.unlock()
+        performWidgetRefresh(request)
+    } else {
+        widgetRefreshActive = false
+        widgetRefreshStateLock.unlock()
+    }
+}
+
+// SwiftUI's Settings scene has no stable AppKit selector on newer macOS
+// releases. Keep the window reference, briefly promote an accessory app to
+// .regular so the window can become key/front, and restore the policy when the
+// Settings window closes.
+class SettingsWindowState {
+    static let shared = SettingsWindowState()
+    weak var window: NSWindow?
+    private var temporarilyRegular = false
+    private var closeObserver: NSObjectProtocol?
+
+    func prepare() {
+        if NSApp.activationPolicy() == .accessory {
+            temporarilyRegular = true
+            NSApp.setActivationPolicy(.regular)
+        }
+        activate()
+    }
+
+    func activate() {
+        if #available(macOS 14.0, *) {
+            NSApp.activate()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    func bringToFront() {
+        if window == nil { retrackWindow() }
+        guard let window = window else { return }
+        installCloseObserver(for: window)
+        activate()
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+    }
+
+    // SwiftUI may reuse the Settings hosting view on a second open. Re-find the
+    // window (and re-install the close observer) so the policy is restored
+    // correctly after that close too.
+    func retrackWindow() {
+        guard let found = SettingsWindowState.findSettingsWindow() else { return }
+        window = found
+        installCloseObserver(for: found)
+    }
+
+    private func installCloseObserver(for window: NSWindow) {
+        if closeObserver == nil {
+            closeObserver = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
+                self?.windowClosed()
+            }
+        }
+    }
+
+    func windowClosed() {
+        if let closeObserver = closeObserver {
+            NotificationCenter.default.removeObserver(closeObserver)
+            self.closeObserver = nil
+        }
+        window = nil
+        guard temporarilyRegular else { return }
+        temporarilyRegular = false
+        let showOn = ud.string(forKey: "showOn") ?? "sbar"
+        if showOn == "sbar" || showOn == "none" {
+            NSApp.setActivationPolicy(.accessory)
+        }
+    }
+
+    func restorePolicyIfNoWindow() {
+        if window == nil { retrackWindow() }
+        if window == nil { windowClosed() }
+    }
+
+    private static func findSettingsWindow() -> NSWindow? {
+        let localizedTitle = NSLocalizedString("AirBattery Settings", comment: "")
+        return NSApp.windows.first { w in
+            guard w.isVisible, w.canBecomeMain else { return false }
+            // SwiftUI's Settings window identifier is stable across locales
+            // (e.g. "com_apple_SwiftUI_Settings_window").
+            if let identifier = w.identifier?.rawValue.lowercased(),
+               identifier.contains("settings") || identifier.contains("preferences") {
+                return true
+            }
+            return w.title == localizedTitle || w.title == "AirBattery Settings"
+        }
+    }
+}
+
 
 @main
 struct AirBatteryApp: App {
@@ -33,7 +228,10 @@ struct AirBatteryApp: App {
     init() {
         // If you want to start the updater manually, pass false to startingUpdater and call .startUpdater() later
         // This is where you can also pass an updater delegate if you need one
-        updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+        // Patched build: never auto-update from the upstream appcast (would overwrite our build).
+        updaterController = SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil)
+        // Widget cadence aligned with the native Batteries widget (~60 s timer);
+        // no extra charging-triggered reloads.
         registerNotificationCategory()
     }
     
@@ -43,6 +241,7 @@ struct AirBatteryApp: App {
                 .background(
                     WindowAccessor(
                         onWindowOpen: { w in
+                            SettingsWindowState.shared.window = w
                             if let w = w {
                                 //w.level = .floating
                                 w.titlebarSeparatorStyle = .none
@@ -53,6 +252,9 @@ struct AirBatteryApp: App {
                                 controller.splitViewItems.first?.maximumThickness = 175
                                 w.orderFront(nil)
                             }
+                        },
+                        onWindowClose: {
+                            SettingsWindowState.shared.windowClosed()
                         })
                 )
         }
@@ -86,6 +288,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     var menu: NSMenu = NSMenu()
     var startTime = Date()
     let nc = NSWorkspace.shared.notificationCenter
+    let deviceConnectQueue = DispatchQueue(label: "com.lihaoyun6.AirBattery.device-connect")
+    var widgetRefreshTimer: Timer?
     
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
         
@@ -229,7 +433,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         print("⚙️ Launch AirBattery at login = \(launchAtLogin)")
         print("⚙️ Icon mode = \(showOn)")
         if ncGroupID != "" { if nearCast { netcastService.resume() } }
-        if let result = process(path: "/usr/sbin/system_profiler", arguments: ["SPBluetoothDataType", "-json"]) { SPBluetoothDataModel.shared.data = result }
+        if let result = process(path: "/usr/sbin/system_profiler", arguments: ["SPBluetoothDataType", "-json"], timeout: 30) { SPBluetoothDataModel.shared.data = result }
         
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
             if let error = error { print("⚠️ Notification authorization denied: \(error.localizedDescription)") }
@@ -242,10 +446,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         IDeviceBattery.shared.startScan()
         
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-            AirBatteryModel.writeData()
             _ = AirBatteryModel.singleDeviceName()
-            WidgetCenter.shared.reloadAllTimelines()
+            refreshWidgetData(includeIDevices: true)
         }
+
+        // Keep the widget's shared JSON fresh even when no popover/dock view is
+        // alive. This timer only rewrites the JSON; timeline reloads stay on
+        // the single existing widgetViewTimer source.
+        let refreshInterval = TimeInterval(60 * max(1, updateInterval))
+        widgetRefreshTimer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { _ in
+            refreshWidgetData(includeIDevices: true, refreshBluetooth: false, reloadWidgets: false)
+        }
+        widgetRefreshTimer?.tolerance = 10
         
         //menu.delegate = self
         //statusMenu.delegate = self
@@ -304,6 +516,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     
     func applicationWillTerminate(_ notification: Notification) {
         if let act = keepAliveActivity { ProcessInfo.processInfo.endActivity(act) }
+        widgetRefreshTimer?.invalidate()
 
         _ = process(path: "/usr/bin/killall", arguments: ["idevicesyslog"])
     }
@@ -323,33 +536,35 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     }
     
     @objc func deviceIsConnected(notification: IOBluetoothUserNotification, fromDevice device: IOBluetoothDevice) {
-        if readBTHID {
-            let now = Date()
-            if now.timeIntervalSince(startTime) >= 10 {
-                if let name = device.name, let macAdd = device.addressString {
-                    if AirBatteryModel.checkIfBlocked(name: name) { return }
-                    //if let prefix = getFirstNCharacters(of: macAdd, count: 8) {
-                        print("ℹ️ \(name) (\(macAdd)) connected")
-                        DispatchQueue.global(qos: .background).async {
-                            usleep(2500000)
-                            //if !appleMacPrefix.contains(prefix) {
-                            if !device.isAppleDevice {
-                                SPBluetoothDataModel.shared.refeshData { _ in
-                                    LogReader.shared.run(.connect)
-                                    MagicBattery.shared.getIOBTBattery()
-                                    MagicBattery.shared.getOtherBTBattery()
-                                }
-                            } else {
-                                if let device = AirBatteryModel.getByName(name) {
-                                    if ["Trackpad", "Keyboard", "MMouse", "Mouse"].contains(device.deviceType) {
-                                        SPBluetoothDataModel.shared.refeshData { _ in MagicBattery.shared.scanDevices() }
-                                    }
-                                } else {
-                                    SPBluetoothDataModel.shared.refeshData { _ in MagicBattery.shared.scanDevices() }
-                                }
-                            }
-                        }
-                    //}
+        guard readBTHID else { return }
+        let now = Date()
+        guard now.timeIntervalSince(startTime) >= 10 else { return }
+        // Read everything we need from IOBluetoothDevice on the callback
+        // thread. The object is not thread-safe and must never be captured by
+        // (or released on) a background queue.
+        guard let name = device.name, let macAdd = device.addressString else { return }
+        let isAppleDevice = device.isAppleDevice
+        guard !AirBatteryModel.checkIfBlocked(name: name) else { return }
+        print("ℹ️ \(name) (\(macAdd)) connected")
+
+        // A dedicated serial queue coalesces the reconnect burst after wake,
+        // so only one system_profiler scan/update runs at a time.
+        deviceConnectQueue.async {
+            usleep(2500000)
+            //if !appleMacPrefix.contains(prefix) {
+            if !isAppleDevice {
+                SPBluetoothDataModel.shared.refeshData { _ in
+                    LogReader.shared.run(.connect)
+                    MagicBattery.shared.getIOBTBattery()
+                    MagicBattery.shared.getOtherBTBattery()
+                }
+            } else {
+                if let device = AirBatteryModel.getByName(name) {
+                    if ["Trackpad", "Keyboard", "MMouse", "Mouse"].contains(device.deviceType) {
+                        SPBluetoothDataModel.shared.refeshData { _ in MagicBattery.shared.scanDevices() }
+                    }
+                } else {
+                    SPBluetoothDataModel.shared.refeshData { _ in MagicBattery.shared.scanDevices() }
                 }
             }
         }
@@ -404,11 +619,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
                 switch url.host {
                 case "writedata" :
                     print("Writing data to disk...")
-                    AirBatteryModel.writeData()
+                    refreshWidgetData(includeIDevices: false, refreshBluetooth: false, reloadWidgets: false)
                 case "reloadwingets" :
                     print("Reloading all widgets...")
-                    AirBatteryModel.writeData()
-                    WidgetCenter.shared.reloadAllTimelines()
+                    refreshWidgetData(includeIDevices: true)
                 default: print("Unknow command!")
                 }
             }
@@ -537,4 +751,27 @@ func ensureLoginItem(enabled: Bool) -> Bool {
 
 func registerDefaults() {
     UserDefaults.standard.register(defaults: ["LaunchAtLogin": false])
+}
+
+
+// Debounced immediate widget reload when a charging flag flips (e.g. iPhone plugged in).
+// Coalesces bursts into one reload and allows at most one every 15 s to respect the reload budget.
+private var lastChargingReload: Date = .distantPast
+private var chargingReloadPending = false
+private func installChargingChangeWidgetReload() {
+    AirBatteryModel.onChargingStateChange = {
+        NSLog("AirBatteryTiming charging state changed")
+        if chargingReloadPending { return }
+        chargingReloadPending = true
+        let wait = max(1.0, 15.0 - Date().timeIntervalSince(lastChargingReload))
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait) {
+            chargingReloadPending = false
+            lastChargingReload = Date()
+            DispatchQueue.global(qos: .utility).async {
+                AirBatteryModel.writeData()
+                NSLog("AirBatteryTiming wrote data.json, reloading widgets")
+                DispatchQueue.main.async { WidgetCenter.shared.reloadAllTimelines() }
+            }
+        }
+    }
 }

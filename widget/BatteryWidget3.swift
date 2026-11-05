@@ -38,7 +38,7 @@ struct SmallWidgetView2: View {
             Text("AirBattery is not running\nLaunch the app to make\nthe widget work")
                 .multilineTextAlignment(.center)
                 .font(.system(size: 11, weight: .medium))
-                .foregroundColor(Color.gray)
+                .foregroundColor(.secondary)
         } else {
             if entry.data.count == 0 {
                 VStack(spacing: 17) {
@@ -85,7 +85,7 @@ struct SmallWidgetView2: View {
                                         .rotationEffect(Angle(degrees: 270.0))
                                     
                                     Image(getDeviceIcon(item))
-                                        .resizable()
+                                        .resizable().abAccented()
                                         .aspectRatio(contentMode: .fit)
                                         .frame(width: 26, height: 26, alignment: .center)
                                     
@@ -134,7 +134,7 @@ struct SmallWidgetView2: View {
                                         .rotationEffect(Angle(degrees: 270.0))
                                     
                                     Image(getDeviceIcon(item))
-                                        .resizable()
+                                        .resizable().abAccented()
                                         .aspectRatio(contentMode: .fit)
                                         .frame(width: 26, height: 26, alignment: .center)
                                     
@@ -171,7 +171,7 @@ struct doubleBatteryWidgetEntryView2: View {
             Text("AirBattery is not running\nLaunch the app to make the widget work")
                 .multilineTextAlignment(.center)
                 .font(.system(size: 12, weight: .medium))
-                .foregroundColor(Color.gray)
+                .foregroundColor(.secondary)
         } else {
             if entry.data.count == 0 {
                 VStack(spacing: 17){
@@ -219,7 +219,7 @@ struct doubleBatteryWidgetEntryView2: View {
                                             .rotationEffect(Angle(degrees: 270.0))
                                         
                                         Image(getDeviceIcon(item))
-                                            .resizable()
+                                            .resizable().abAccented()
                                             .aspectRatio(contentMode: .fit)
                                             .frame(width: 26, height: 26, alignment: .center)
                                         
@@ -269,7 +269,7 @@ struct doubleBatteryWidgetEntryView2: View {
                                             .rotationEffect(Angle(degrees: 270.0))
                                         
                                         Image(getDeviceIcon(item))
-                                            .resizable()
+                                            .resizable().abAccented()
                                             .aspectRatio(contentMode: .fit)
                                             .frame(width: 26, height: 26, alignment: .center)
                                         
@@ -305,12 +305,13 @@ struct batteryWidget3: Widget {
         StaticConfiguration(kind: kind, provider: ViewSizeTimelineProvider()) { entry in
             batteryWidgetEntryView3(entry: entry)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .ignoresSafeArea()
-                .widgetBackground(Color("WidgetBackground"))
+                .airBatterySystemWidgetBackground()
+                .airBatteryWidgetAccentable()
         }
         .configurationDisplayName("Batteries")
         .description("Displays battery usage for your devices without percentage")
         .disableContentMarginsIfNeeded()
+        .airBatteryRemovableBackground()
         .supportedFamilies([.systemMedium, .systemSmall])
     }
 }

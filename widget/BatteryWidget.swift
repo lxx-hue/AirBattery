@@ -145,7 +145,7 @@ struct LargeWidgetView : View {
             Text("AirBattery is not running\nLaunch the app to make the widget work")
                 .multilineTextAlignment(.center)
                 .font(.system(size: 12, weight: .medium))
-                .foregroundColor(Color.gray)
+                .foregroundColor(.secondary)
         } else {
             if entry.data.count == 0 {
                 VStack(alignment:.leading) {
@@ -182,7 +182,7 @@ struct LargeWidgetView : View {
                             VStack{
                                 HStack() {
                                     Image(getDeviceIcon(item))
-                                        .resizable()
+                                        .resizable().abAccented()
                                         .aspectRatio(contentMode: .fit)
                                     //.foregroundColor(.blackWhite)
                                         .frame(width: 20, height: 20, alignment: .center)
@@ -229,7 +229,7 @@ struct SmallWidgetView : View {
             Text("AirBattery is not running\nLaunch the app to make\nthe widget work")
                 .multilineTextAlignment(.center)
                 .font(.system(size: 11, weight: .medium))
-                .foregroundColor(Color.gray)
+                .foregroundColor(.secondary)
         } else {
             if entry.data.count == 0 {
                 VStack(spacing: 17) {
@@ -293,7 +293,7 @@ struct SmallWidgetView : View {
                                     }.rotationEffect(Angle(degrees: 129.6))
                                     
                                     Image(getDeviceIcon(item))
-                                        .resizable()
+                                        .resizable().abAccented()
                                         .aspectRatio(contentMode: .fit)
                                         //.foregroundColor(.blackWhite)
                                         .frame(width: 26, height: 26, alignment: .center)
@@ -347,7 +347,7 @@ struct SmallWidgetView : View {
                                     }.rotationEffect(Angle(degrees: 129.6))
                                     
                                     Image(getDeviceIcon(item))
-                                        .resizable()
+                                        .resizable().abAccented()
                                         .aspectRatio(contentMode: .fit)
                                         //.foregroundColor(.blackWhite)
                                         .frame(width: 26, height: 26, alignment: .center)
@@ -388,7 +388,7 @@ struct MediumWidgetView : View {
             Text("AirBattery is not running\nLaunch the app to make the widget work")
                 .multilineTextAlignment(.center)
                 .font(.system(size: 12, weight: .medium))
-                .foregroundColor(Color.gray)
+                .foregroundColor(.secondary)
         } else {
             if entry.data.count == 0 {
                 HStack(spacing: 23) {
@@ -431,7 +431,7 @@ struct MediumWidgetView : View {
                                     }.rotationEffect(Angle(degrees: 270.0))
                                     
                                     Image(getDeviceIcon(item))
-                                        .resizable()
+                                        .resizable().abAccented()
                                         .aspectRatio(contentMode: .fit)
                                         //.foregroundColor(.blackWhite)
                                         .frame(width: 26, height: 26, alignment: .center)
@@ -512,12 +512,13 @@ struct batteryWidget: Widget {
         StaticConfiguration(kind: kind, provider: ViewSizeTimelineProvider()) { entry in
             batteryWidgetEntryView(entry: entry)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .ignoresSafeArea()
-                .widgetBackground(Color("WidgetBackground"))
+                .airBatterySystemWidgetBackground()
+                .airBatteryWidgetAccentable()
         }
         .configurationDisplayName("Batteries")
         .description("Displays battery usage for your devices from AirBattery")
         .disableContentMarginsIfNeeded()
+        .airBatteryRemovableBackground()
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
     }
 }

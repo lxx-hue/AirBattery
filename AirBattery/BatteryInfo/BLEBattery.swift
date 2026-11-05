@@ -98,6 +98,7 @@ class BLEBattery: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     var otherAppleDevices: [String] = []
     var bleDevicesLevel: [String:UInt8] = [:]
     var bleDevicesVendor: [String:String] = [:]
+    var bleLastRise: [String:Double] = [:]
     var scanTimer: Timer?
     //var a = 1
     //var mfgData: Data!
@@ -126,7 +127,27 @@ class BLEBattery: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         scan(longScan: true)
     }
 
+    /// Already-connected BLE peripherals (e.g. Logitech BLE keyboards) don't advertise,
+    /// so scanForPeripherals never sees them. Ask CoreBluetooth for connected devices
+    /// exposing the Battery Service (0x180F) and read 2A19 like the native Batteries widget.
+    func readConnectedBatteryPeripherals() {
+        guard centralManager.state == .poweredOn else { return }
+        let now = Date().timeIntervalSince1970
+        for p in centralManager.retrieveConnectedPeripherals(withServices: [CBUUID(string: "180F")]) {
+            guard let name = p.name, !AirBatteryModel.checkIfBlocked(name: name) else { continue }
+            if let d = AirBatteryModel.getByName(name), now - d.lastUpdate < Double(60 * updateInterval) { continue }
+            if !peripherals.contains(p) { peripherals.append(p) }
+            p.delegate = self
+            if p.state == .connected, let svcs = p.services, svcs.contains(where: { $0.uuid == CBUUID(string: "180F") }) {
+                for svc in svcs where svc.uuid == CBUUID(string: "180F") { p.discoverCharacteristics(nil, for: svc) }
+            } else {
+                centralManager.connect(p, options: nil)
+            }
+        }
+    }
+
     @objc func scan(longScan: Bool = false) {
+        readConnectedBatteryPeripherals()
         if centralManager.state == .poweredOn && !centralManager.isScanning {
             centralManager.scanForPeripherals(withServices: nil, options: nil)
             DispatchQueue.main.asyncAfter(deadline: .now() + (longScan ? 15.0 : 5.0)) {
@@ -199,6 +220,7 @@ class BLEBattery: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
                 if characteristic.uuid == CBUUID(string: "2A19") || characteristic.uuid == CBUUID(string: "2A24") || characteristic.uuid == CBUUID(string: "2A29") {
                     clear = false
                     peripheral.readValue(for: characteristic)
+                    // No 2A19 notify subscription: keep the ~60 s read cadence.
                 }
             }
         }
@@ -218,12 +240,18 @@ class BLEBattery: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
                 let now = Date().timeIntervalSince1970
                 let level = Int(data[0])
                 if level > 100 { return }
-                var charging = 0
-                //if let lastLevel = bleDevicesLevel[deviceName], cStatusOfBLE {
+                // BLE Battery Service has no charging flag: infer it from level trend.
+                // Rise -> charging; drop -> not charging; unchanged -> keep previous
+                // state for up to 150 s after the last rise (old code reset to 0 on
+                // every equal read, making the bolt flicker/lag).
+                var charging = AirBatteryModel.getByName(deviceName)?.isCharging ?? 0
                 if let lastLevel = bleDevicesLevel[deviceName] {
-                    if level > lastLevel { charging = 1 }
-                    //if level < lastLevel { charging = 0 }
-                }
+                    if level > lastLevel { charging = 1; bleLastRise[deviceName] = now }
+                    else if level < lastLevel { charging = 0 }
+                    else if level >= 100 && charging != 0 { charging = 5 /* full & flat after charging: plug icon (original 'full but plugged') until level drops */ }
+                    else if now - (bleLastRise[deviceName] ?? 0) > 150 { charging = 0 }
+                } else { charging = 0 }
+                NSLog("AirBatteryTiming BLE %@ level=%d charging=%d", deviceName, level, charging)
                 bleDevicesLevel[deviceName] = data[0]
                 if var device = AirBatteryModel.getByName(deviceName) {
                     device.deviceID = peripheral.identifier.uuidString

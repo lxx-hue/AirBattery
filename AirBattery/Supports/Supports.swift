@@ -8,6 +8,7 @@ import SwiftUI
 import CryptoKit
 import SystemConfiguration
 import UserNotifications
+import Darwin
 
 let widgetInterval = ud.integer(forKey: "widgetInterval")
 let updateInterval = ud.integer(forKey: "updateInterval")
@@ -219,29 +220,35 @@ public func process(path: String, arguments: [String], timeout: Int = 0) -> Stri
     defer { outputPipe.fileHandleForReading.closeFile() }
     task.standardOutput = outputPipe
 
+    var timeoutWorkItem: DispatchWorkItem?
     if timeout != 0 {
-        DispatchQueue.global().asyncAfter(deadline: .now() + .seconds(timeout)) {
-            if task.isRunning {
-                task.terminate()
-                // Escalate if still running shortly after terminate
-                DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(400)) {
-                    if task.isRunning {
-                        let pid = task.processIdentifier
-                        _ = process(path: "/bin/kill", arguments: ["-9", String(pid)], timeout: 1)
-                    }
-                }
+        // Each call owns its Process/Pipe/Data, so the output handling itself
+        // is local. Keep the timeout work item cancellable and weak so it can
+        // never touch a finished task after this function returns.
+        let item = DispatchWorkItem { [weak task] in
+            guard let task = task, task.isRunning else { return }
+            let pid = task.processIdentifier
+            task.terminate()
+            // Escalate if still running shortly after terminate.
+            DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(400)) { [weak task] in
+                guard let task = task, task.isRunning, pid > 0 else { return }
+                kill(pid, SIGKILL)
             }
         }
+        timeoutWorkItem = item
+        DispatchQueue.global().asyncAfter(deadline: .now() + .seconds(timeout), execute: item)
     }
 
     do {
         try task.run()
     } catch let error {
+        timeoutWorkItem?.cancel()
         print("\(error.localizedDescription)")
         return nil
     }
 
     let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+    timeoutWorkItem?.cancel()
     let output = String(decoding: outputData, as: UTF8.self)
 
     if output.isEmpty { return nil }
