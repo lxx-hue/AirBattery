@@ -137,11 +137,12 @@ class MagicBattery {
         return def
     }
     
-    func readMagicBattery(object: io_object_t) {
+    func readMagicBattery(object: io_object_t, publishIfChanged: Bool = false) {
         var mac = ""
         var type = "hid"
         var status = 0
         var percent = 0
+        var sawPercent = false
         var productName = ""
         let lastUpdate = Date().timeIntervalSince1970
         if let productProperty = IORegistryEntryCreateCFProperty(object, "DeviceAddress" as CFString, kCFAllocatorDefault, 0) {
@@ -154,6 +155,7 @@ class MagicBattery {
         }
         if let percentProperty = IORegistryEntryCreateCFProperty(object, "BatteryPercent" as CFString, kCFAllocatorDefault, 0) {
             percent = percentProperty.takeRetainedValue() as! Int
+            sawPercent = true
         }
         if let productProperty = IORegistryEntryCreateCFProperty(object, "Product" as CFString, kCFAllocatorDefault, 0) {
             productName = productProperty.takeRetainedValue() as! String
@@ -169,8 +171,17 @@ class MagicBattery {
                 productName = getDeviceName(mac, productName)
             }
         }
-        if !productName.contains("Internal"){
-            AirBatteryModel.updateDevice(Device(deviceID: mac, deviceType: type, deviceName: productName, batteryLevel: percent, isCharging: status, parentName: deviceName, lastUpdate: lastUpdate))
+        if productName.contains("Internal") { return }
+        // The periodic scan still refreshes lastUpdate. An interest hint writes
+        // only when the mapped percent or charging flag actually differs.
+        if publishIfChanged {
+            if !sawPercent { return }
+            if AirBatteryModel.sameBattery(name: productName, level: percent, charging: status) { return }
+        }
+        AirBatteryModel.updateDevice(Device(deviceID: mac, deviceType: type, deviceName: productName, batteryLevel: percent, isCharging: status, parentName: deviceName, lastUpdate: lastUpdate))
+        if publishIfChanged {
+            print("ℹ️ Mouse power \(productName) \(percent)% status=\(status)")
+            scheduleLocalPowerWidgetReload()
         }
     }
 

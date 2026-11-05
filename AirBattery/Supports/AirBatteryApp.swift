@@ -444,6 +444,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         btdBattery.startScan()
         MagicBattery.shared.startScan()
         IDeviceBattery.shared.startScan()
+        MacPowerNotifications.shared.start()
+        MousePowerInterest.shared.start()
         
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
             _ = AirBatteryModel.singleDeviceName()
@@ -516,6 +518,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     
     func applicationWillTerminate(_ notification: Notification) {
         if let act = keepAliveActivity { ProcessInfo.processInfo.endActivity(act) }
+        MousePowerInterest.shared.stop()
+        MacPowerNotifications.shared.stop()
         widgetRefreshTimer?.invalidate()
 
         _ = process(path: "/usr/bin/killall", arguments: ["idevicesyslog"])
@@ -528,6 +532,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     }
     
     @objc func onDisplayWake() {
+        MacPowerNotifications.shared.scheduleRead()
+        MousePowerInterest.shared.rereadArmed()
         if readBTHID {
             DispatchQueue.global().asyncAfter(deadline: .now() + 10) {
                 LogReader.shared.run(.wake)

@@ -424,13 +424,18 @@ below has been compiled or run. A reviewer on macOS must check:
 - Widget ring sizes/offsets, colors, charging bolt, and percentage placement
   were not visually tested. Only static code review was possible.
 
-## Accessory power listener withdrawn
+## Public Mac battery and mouse charging notifications
 
-The follow-up that subscribed to the private accessory power-source names and
-called `IOPSCopyPowerSourcesByType` was removed. Those names live in
-`IOPowerSourcesPrivate.h`. A public `notify(3)` registration does not make
-them public. No public HID/IOKit interest path was shown to fire when
-`BatteryPercent` or `BatteryStatusFlags` changes on
-`AppleDeviceManagementHIDEventService`, so that listener was not replaced
-with a guess. The installed custom tree, including PrivateWidgetKit, stays.
-See `docs/mac-accessory-power.md`.
+The status-bar view no longer calls `getPowerState()` on the one-second timer.
+That timer still copies `InternalBattery.status` from memory. Mac battery reads
+now follow `IOPSNotificationCreateRunLoopSource` (percent, time remaining, and
+AC/battery/UPS changes) plus `NSProcessInfoPowerStateDidChange` for Low Power
+Mode. `IOPSCreateLimitedPowerNotification` is not used, because it only reports
+the AC switch.
+
+A connected mouse is watched with public `IOServiceAddInterestNotification`
+and `kIOGeneralInterest`. Any interest callback re-reads the existing HID
+battery properties after a 0.4 second debounce. The measured non-public message
+type is not compared. The original Magic scan, phone/tablet/Watch polling, BLE
+interval, and 60 second widget timer are unchanged. See
+`docs/mac-accessory-power.md`.

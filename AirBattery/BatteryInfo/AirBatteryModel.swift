@@ -94,6 +94,15 @@ class AirBatteryModel {
         }
     }
 
+    // Interest callbacks compare against the stored row, including hidden devices.
+    // getByName() drops expired and blocklisted rows and would treat them as new.
+    static func sameBattery(name: String, level: Int, charging: Int) -> Bool {
+        devicesLock.lock()
+        defer { devicesLock.unlock() }
+        guard let existing = storedDevices.first(where: { $0.deviceName == name }) else { return false }
+        return existing.batteryLevel == level && existing.isCharging == charging
+    }
+
     /// Set by the app: called (on main) when any device's charging state flips,
     /// so the widget can be refreshed immediately instead of on the periodic timer.
     static var onChargingStateChange: (() -> Void)?

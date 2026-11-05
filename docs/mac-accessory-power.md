@@ -1,75 +1,57 @@
-# 配件电源监听已撤回
+# Mac 电量和鼠标充电通知
 
-上一轮把 `notify_register_dispatch` 订到 `com.apple.system.accpowersources.*`，并用 `dlsym` 调用 `IOPSCopyPowerSourcesByType`。`notify(3)` 本身是公开接口，那三条名字和 `IOPSCopyPowerSourcesByType` 写在 `IOPowerSourcesPrivate.h`，头文件写明是 publicly unsupported。公开的 `notify_register_dispatch` 不会把私有通知名变成公开 API。这些调用已经从源码删掉。PrivateWidgetKit、bundle id、禁用 updater、K580、Wi-Fi 充电标记、`scripts/build.sh` 和 `install-adhoc.sh` 仍是已安装快照里的内容，没有撤掉。
+这一版把两件事接上了。都只用公开注册接口。没有 `com.apple.system.accpowersources.*`，没有 `IOPSCopyPowerSourcesByType`，也没有把实测到的非标准消息号写成含义。
 
-没有安装，也没有在 Mac 上跑过。
+Linux 上没有 IOKit，这里没有编译，也不能称编译通过。安装仍由 Mac 上的构建完成。
 
-## 公开电源通知覆盖什么
+## 实测依据
 
-依据 apple-oss-distributions `IOKitUser` `ps.subproj/IOPowerSources.c` 和公开头 `IOPowerSources.h`：
+本机诊断看到 `AppleDeviceManagementHIDEventService` 上的 Magic Mouse：基线电量 80%，`BatteryStatusFlags` 为 4。随后 4 次 `kIOGeneralInterest`，`messageType` 都是 `0x62747374`（公开头里没有这个名字），flags 依次是 5、3、5、4。没有 `kIOMessageServicePropertyChange`，也没有服务出现或消失。程序 120 秒后自己退出。
 
-| 公开 API | 注册的名字 | 覆盖 |
+这说明这只鼠标在充电变化时，公开的 general interest 会回调，但消息号不是公开标准值。程序不比较这个数字。任何鼠标服务上的 interest 都只当作“去重读”的提示，然后走原来的 `BatteryPercent` / `BatteryStatusFlags` 读取。`4` 仍按原逻辑改记成 `0`。0.4 秒内的连续回调合成一次读取，所以 5 紧接着 3、以及 5 紧接着 4 这种成簇变化，会落到簇结束后的那个值。两次簇如果隔开数秒，会各自写一次。数值和上次已经写入的电量、充电标记相同，就不写设备、也不刷新小组件。
+
+原来的 Magic 设备扫描还在，频率没有提高。鼠标服务消失后会卸掉对应的 interest；再次出现时按设备名更新同一行，不另建一行。键盘和触控板即使落在 `AppleDeviceManagementHIDEventService` 里，也不登记 interest。
+
+## Mac 自身电量
+
+状态栏 `mainBatteryView` 不再调用 `getPowerState()`。`mainTimer` 仍是每秒一次，只把内存里的 `InternalBattery.status` 抄到图标上，并维持原来的宽度调整。弹出层的每秒刷新也只读这份内存。
+
+IOKit 读取改到通知之后：
+
+| 来源 | 覆盖 | 本程序 |
 | --- | --- | --- |
-| `IOPSNotificationCreateRunLoopSource` | `com.apple.system.powersources.timeremaining` | Mac 主电池 / UPS 的剩余时间，以及 AC、电池、UPS 切换 |
-| `IOPSCreateLimitedPowerNotification` | `com.apple.system.powersources.source` | 当前供电从 AC 切到电池或 UPS |
-| `kIOPSNotifyAttach` | `com.apple.system.powersources.attach` | 内置电池出现，或 UPS 插拔 |
-| `kIOPSNotifyLowBattery` | `com.apple.system.powersources.lowbattery` | 系统低电量警告 |
-| `kIOPSNotifyAnyPowerSource` | `com.apple.system.powersources` | IOPowerSource 属性。`pmset` 的 `pslog` 与 `accpslog` 把它和配件通道分开注册 |
-| `IOPSCopyPowerSourcesInfo` | 内部调用 internal+UPS | 只返回内置电池和 UPS |
+| `IOPSNotificationCreateRunLoopSource` | 公开头写明：电量百分比或剩余时间变化时都会投递，充电、放电过程中会比较频繁；对应的 `kIOPSNotifyTimeRemaining` 同时包含 AC、电池、UPS 切换 | 使用。回调后先等 0.4 秒，并且两次真正读取至少间隔 2 秒，然后调用原来的 `getPowerState()` |
+| `IOPSCreateLimitedPowerNotification` | 只在 AC 与电池/UPS 之间切换时投递，百分比变化不投递 | 不使用。只用它会漏掉电量 |
+| `kIOPSNotifyLowBattery` | 公开的低电量警告（大约还能用 20 分钟 / 10 分钟） | 不单独 `notify_register`。百分比和剩余时间通知已经会把这种变化带出来 |
+| `NSProcessInfoPowerStateDidChange` | macOS 12 起的低电量模式开关 | 使用。读数仍是 `ProcessInfo.isLowPowerModeEnabled` |
+| 启动时已有的 `getPowerState()` | 一次基线 | 保留。静态初值、`applicationWillFinishLaunching`、创建状态栏图标各一次 |
+| 显示器唤醒 | 睡眠期间可能丢掉通知 | 唤醒时再读一次 Mac 电量，并重读已经登记的鼠标。不扫描手机 |
 
-私有头里的 `com.apple.system.accpowersources.*` 和 `IOPSCopyPowerSourcesByType` 才对应 `pmset accps`。它们不是这次要接的公开接口，源码里不再出现。
+百分比、充电、充满、AC、低电量模式或有无电池发生变化时，才写内存并排队刷新小组件。只是剩余时间字符串变了（菜单里的 `timeLeft`）时，更新内存，不因此刷新小组件。
 
-## 公开 HID / IOKit 能不能在电量属性变化时通知
+小组件原来的 `widgetViewTimer`（`60 * updateInterval` 秒）不动。状态变化引起的额外 `reloadAllTimelines` 至少间隔 15 秒，同一波变化合成一次，并且 `widgetInterval == -1` 时仍然不刷新。这次刷新只写已经在内存里的 `data.json`，不调用 iPhone / iPad / Watch 查询，也不做 BLE 扫描。
 
-妙控鼠标的电量在 IORegistry 的 `AppleDeviceManagementHIDEventService` 上，属性名是 `BatteryPercent` 和 `BatteryStatusFlags`。发布者是 `com.apple.driver.AppleTopCaseHIDEventDriver`。整个公开的 IOHIDFamily 树里没有这两个属性名。
+监听在 `applicationWillFinishLaunching` 启动，在 `applicationWillTerminate` 卸下运行循环源、interest、iterator 和通知端口。
 
-已经核对过的公开机制：
+## 没有改的定制
 
-1. `IOServiceAddMatchingNotification`（`kIOFirstMatchNotification`、`kIOTerminatedNotification` 等）在服务出现或消失时调用。服务一直注册着、只改属性时，匹配通知不发生。鼠标连上时本应用已有 `IOBluetoothDevice.register(forConnectNotifications:)`。
-2. `IOServiceAddInterestNotification` 的 `kIOGeneralInterest` 是公开的。xnu `IOService::messageClients` 只把消息发给 general interest。也就是说，interest 回调只有在该服务实际调用 `message` / `messageClients` 时才会进。
-3. xnu 的 `IORegistryEntry::setProperty` 只改属性表，不调用 `messageClients`。单靠属性被写上，interest 不会响。
-4. 公开的 `IOHIDDevice::setProperty`（IOHIDFamily `IOHIDDevice.cpp`）只在键属于 `kIOHIDDeviceMessagePropertyUpdateKeys` 时调用 `messageClients(kIOMessageServicePropertyChange)`。Apple 的 `HIDDevice.setPropertyChangeHandler` 也写明只接受这个列表，并且只处理 `kIOMessageServicePropertyChange`。`BatteryPercent` 不在 IOHIDFamily 源码里，不能把它算进这个列表。
-5. 公开的 `IOHIDEventService::message` 只把 `kIOMessageServiceIsRequestingClose` 转给 `messageClients`。基类不会在任意 `setProperty` 时发属性变化消息。
-6. `powerd` 对 `IOPMPowerSource` 注册 general interest，并只处理 `kIOPMMessageBatteryStatusHasChanged`。那是 Mac 自己的电源对象。妙控鼠标的类是 `AppleDeviceManagementHIDEventService`，不是 `IOPMPowerSource`。
-7. registry 里能看到 `"IOGeneralInterest" = "IOCommand is not serializable"`。这表示对象上有 interest 命令槽，不表示 `BatteryPercent` 写入时会投递消息。`"BatteryStatusNotificationType" = "BatteryStatusChanged"` 是驱动放在属性里的字符串，公开头里没有对应的 notify 名，也没有找到发布这段字符串的开源代码。
+bundle id `com.lihaoyun6.AirBattery`、关闭 updater、去掉设置里的更新区、PrivateWidgetKit 玻璃背景、K580、Wi-Fi 充电标记、`scripts/build.sh` 的版本号和 deployment 12.0、`install-adhoc.sh` 的小组件 entitlements，都还在。
 
-`AppleDeviceManagementHIDEventDriver` 不在已公开的 IOHIDFamily 里。它的子类有可能自己调用 `messageClients`，这一点没有源码或实测可以证明。按“必须证明属性变化实际会通知”的要求，不能接上 interest 然后当作已经能跟着 `BatteryPercent` 更新。因此新增监听全部撤回，继续用基线里的 HID 轮询。
+## Mac 上的编译和核对
 
-未解决：闭源的 `AppleTopCaseHIDEventDriver` 在改 `BatteryPercent` / `BatteryStatusFlags` 时是否调用 `messageClients`。这需要在 Mac 上对具体服务注册 `kIOGeneralInterest`，改电量后看回调里的 `messageType` 是不是 `kIOMessageServicePropertyChange`，并同时读到新的属性值。这次没有做这个实验，所以没有实现。
+在仓库根目录：
 
-## Mac 自身电量：每秒读取何时发生
-
-读数函数是 `Supports.swift` 的 `getPowerState()`，里面用 `InternalFinder.getInternalBattery()`：
-
-- 打开 `AppleSmartBattery`
-- 容量和充电来自该服务的 registry 属性
-- 剩余时间来自公开 `IOPSCopyPowerSourcesInfo`（internal+UPS）
-- `machineType` 不含 `book` 时直接返回无电池，不再查 IOKit
-
-重复调用只有 `BatteryView.swift` 的 `mainBatteryView`：
-
-```swift
-.onReceive(mainTimer) { t in
-    if item.hasBattery {
-        InternalBattery.status = getPowerState()
-        ...
-        InternalBattery.status = getPowerState()
-    }
-}
+```bash
+bash scripts/build.sh
 ```
 
-`mainTimer` 在 `Supports.swift`：`Timer.publish(every: 1, on: .main, in: .common).autoconnect()`。Combine 的 autoconnect 在订阅数从 0 变 1 时启动，回到 0 时取消。SwiftUI 的 `onReceive` 跟这个视图的出现和消失走。
+构建脚本会把 deployment 设为 12.0 并递增 `CFBundleVersion`。不要把 Linux 上的静态检查说成编译通过。
 
-调用条件，以源码为准：
+装上之后可以看这几件事：
 
-- `item` 的初值是创建视图时的 `InternalBattery.status`。`hasBattery == false`（台式 Mac，或 `machineType` 不含 `book`）时，这个每秒回调不再调用 `getPowerState`。
-- `hasBattery == true` 时，非调试路径每个 tick 调用两次 `getPowerState`（第 155 行和第 161 行）。`intBattOnStatusBar == false` 只改图标宽度，不停止这次读取。
-- 这个视图在 `applicationWillFinishLaunching` 里做成状态栏按钮的 `NSHostingView`，加到按钮上之后才设置 `statusBarItem.isVisible`。`showOn` 为 `dock` 或 `none` 时状态项被设为不可见，但视图对象在那之前已经创建。
-- `setStatusBar` 会拆掉按钮上的子视图并新建一个 `mainBatteryView`，订阅跟着换。
-- 菜单弹出层 `ContentView` 也订阅了 `mainTimer`，但只在 `!fromDock && menuPopover.isShown` 时刷新设备列表，读的是已经写好的 `InternalBattery.status`，不调用 `getPowerState`。关掉弹出层不会拆掉状态栏上的 `mainBatteryView`。
-- Dock 磁贴用的 `MultiBatteryView` 不订阅 `mainTimer`，也不调用 `getPowerState`。它用 5 秒的 `dockTimer` 转设备列表。
-- 另外三次单次读取与视图是否显示无关：`InternalBattery.status` 的静态初值、`applicationWillFinishLaunching`、创建状态栏图标时。
-
-没有在 Mac 上观察过隐藏状态栏之后，`NSHostingView` 是否仍算出现、autoconnect 是否还在跑。源码只能确定：每秒的 IOKit 读取写在状态栏这个视图里；弹出层的显示和隐藏不直接开关这次读取；Dock 磁贴自己不读。状态项被隐藏后订阅是否还在，仍是未测点。
-
-iPhone、iPad、Watch 的轮询间隔没有改。
+1. 菜单栏电量仍会随充电或放电变化。控制台出现 `Mac power ...` 只在读数真正变化时，而不是每秒两行。
+2. 插拔妙控鼠标充电线后，大约半秒内出现一行 `Mouse power ...`。短时间内的 flags 5/3/4 不应连打多行相同结果。
+3. 断开再连上鼠标，设备列表里仍是原来的名字，不多出一行。
+4. iPhone、iPad、Watch 的刷新间隔和以前一样。插拔鼠标或 Mac 电源不该触发 `idevice` 或 BLE 扫描。
+5. 小组件周期仍是原来的 60 秒档。电量或充电标记变化时可以额外刷新一次，但 15 秒内不会连刷。
+6. 退出后进程结束，不残留监听进程。
