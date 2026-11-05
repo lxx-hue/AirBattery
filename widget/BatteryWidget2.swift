@@ -17,7 +17,7 @@ struct LargeWidgetView2: View {
             Text("AirBattery is not running\nLaunch the app to make the widget work")
                 .multilineTextAlignment(.center)
                 .font(.system(size: 12, weight: .medium))
-                .foregroundColor(Color.gray)
+                .foregroundColor(.secondary)
         } else {
             if entry.data.count == 0 {
                 VStack(alignment:.leading) {
@@ -53,7 +53,7 @@ struct LargeWidgetView2: View {
                         VStack{
                             HStack() {
                                 Image(getDeviceIcon(item))
-                                    .resizable()
+                                    .resizable().abAccented()
                                     .aspectRatio(contentMode: .fit)
                                     .frame(width: 20, height: 20, alignment: .center)
                                 Text("\(((Date().timeIntervalSince1970 - item.lastUpdate) / 60) > 10 ? "⚠︎ " : "")\(item.deviceName)")
@@ -98,7 +98,7 @@ struct doubleRowBatteryWidgetEntryView: View {
             Text("AirBattery is not running\nLaunch the app to make the widget work")
                 .multilineTextAlignment(.center)
                 .font(.system(size: 12, weight: .medium))
-                .foregroundColor(Color.gray)
+                .foregroundColor(.secondary)
         } else {
             if entry.data.count == 0 {
                 VStack(spacing: 17){
@@ -162,7 +162,7 @@ struct doubleRowBatteryWidgetEntryView: View {
                                                 .foregroundColor(Color(getPowerColor(item)))
                                         }.rotationEffect(Angle(degrees: 129.6))
                                         Image(getDeviceIcon(item))
-                                            .resizable()
+                                            .resizable().abAccented()
                                             .aspectRatio(contentMode: .fit)
                                             //sf.foregroundColor(.blackWhite)
                                             .frame(width: 26, height: 26, alignment: .center)
@@ -217,7 +217,7 @@ struct doubleRowBatteryWidgetEntryView: View {
                                         }.rotationEffect(Angle(degrees: 129.6))
                                         
                                         Image(getDeviceIcon(item))
-                                            .resizable()
+                                            .resizable().abAccented()
                                             .aspectRatio(contentMode: .fit)
                                             //.foregroundColor(.blackWhite)
                                             .frame(width: 26, height: 26, alignment: .center)
@@ -262,7 +262,7 @@ struct singleBatteryWidgetEntryView: View {
             Text("AirBattery is not running\nLaunch the app to make\nthe widget work")
                 .multilineTextAlignment(.center)
                 .font(.system(size: 11, weight: .medium))
-                .foregroundColor(Color.gray)
+                .foregroundColor(.secondary)
         } else {
             if let item = item {
                 VStack(spacing: 10) {
@@ -290,7 +290,7 @@ struct singleBatteryWidgetEntryView: View {
                                     .foregroundColor(Color(getPowerColor(item)))
                             }.rotationEffect(Angle(degrees: 126))
                             Image(getDeviceIcon(item))
-                                .resizable()
+                                .resizable().abAccented()
                                 .aspectRatio(contentMode: .fit)
                                 .frame(width: 50, height: 50, alignment: .center)
                             if item.isCharging != 0 || item.acPowered {
@@ -381,12 +381,13 @@ struct batteryWidget2New: Widget {
         AppIntentConfiguration(kind: kind, intent: ConfigurationAppIntent.self, provider: ViewSizeTimelineProviderNew()) { entry in
             batteryWidgetEntryView2(entry: entry)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .ignoresSafeArea()
-                .widgetBackground(Color("WidgetBackground"))
+                .airBatterySystemWidgetBackground()
+                .airBatteryWidgetAccentable()
         }
         .configurationDisplayName("Batteries")
         .description("Displays the battery usage of a specific device")
         .disableContentMarginsIfNeeded()
+        .airBatteryRemovableBackground()
         .supportedFamilies([.systemSmall])
     }
 }
@@ -398,12 +399,13 @@ struct batteryWidget2: Widget {
         StaticConfiguration(kind: kind, provider: ViewSizeTimelineProvider()) { entry in
             batteryWidgetEntryView2(entry: entry)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .ignoresSafeArea()
-                .widgetBackground(Color("WidgetBackground"))
+                .airBatterySystemWidgetBackground()
+                .airBatteryWidgetAccentable()
         }
         .configurationDisplayName("Batteries")
         .description("More ways to displays battery usage for your devices")
         .disableContentMarginsIfNeeded()
+        .airBatteryRemovableBackground()
         .supportFamily()
     }
 }

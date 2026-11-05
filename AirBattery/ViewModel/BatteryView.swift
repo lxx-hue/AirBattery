@@ -152,13 +152,12 @@ struct mainBatteryView: View {
         .onReceive(dockTimer) { t in refeshPinnedBar() }
         .onReceive(mainTimer) { t in
             if item.hasBattery {
-                InternalBattery.status = getPowerState()
+                // Memory only. IOKit reads happen on the public power-source
+                // notification, not on this one-second view tick.
                 let width = statusBarItem.button?.frame.size.width
                 if intBattOnStatusBar {
                     if test_debug {
                         InternalBattery.status = iBattery(hasBattery: test_hasib, isCharging: !test_full, isCharged: false, acPowered: test_ac, timeLeft: "", batteryLevel: test_iblevel)
-                    } else {
-                        InternalBattery.status = getPowerState()
                     }
                     item = InternalBattery.status
                     if batteryPercent != "outside" {

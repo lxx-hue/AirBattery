@@ -54,37 +54,83 @@ struct Device: Hashable, Codable {
 }
 
 class AirBatteryModel {
-    static var lock = false
-    static var Devices: [Device] = []
+    private static let devicesLock = NSLock()
+    private static let writeLock = NSLock()
+    private static var storedDevices: [Device] = []
     static let machineType = ud.string(forKey: "machineType") ?? "Mac"
     static let key = "com.lihaoyun6.AirBattery.widget"
     
+    // `Devices` is read by widget/UI code and written by several background
+    // scanner threads (IOBluetooth callbacks, iDevice/Bluetooth scans).
+    // Always take a consistent snapshot through this accessor.
+    static var Devices: [Device] {
+        get {
+            devicesLock.lock()
+            defer { devicesLock.unlock() }
+            return storedDevices
+        }
+        set {
+            devicesLock.lock()
+            defer { devicesLock.unlock() }
+            storedDevices = newValue
+        }
+    }
+
     static func updateDevice(_ device: Device) {
         //let blockedItems = (ud.object(forKey: "blockedDevices") as? [String]) ?? [String]()
         //if blockedItems.contains(device.deviceName) { return }
-        if lock { return }
-        lock = true
-        //self.Devices.removeAll(where: {blockedItems.contains($0.deviceName)})
-        if let index = self.Devices.firstIndex(where: { $0.deviceName == device.deviceName }) {
-            self.Devices[index] = device
+        devicesLock.lock()
+        defer { devicesLock.unlock() }
+        //self.storedDevices.removeAll(where: {blockedItems.contains($0.deviceName)})
+        var chargingChanged = false
+        if let index = storedDevices.firstIndex(where: { $0.deviceName == device.deviceName }) {
+            chargingChanged = storedDevices[index].isCharging != device.isCharging
+            storedDevices[index] = device
         } else {
-            self.Devices.append(device)
+            storedDevices.append(device)
         }
-        lock = false
+        if chargingChanged, let hook = onChargingStateChange {
+            DispatchQueue.main.async { hook() }
+        }
     }
+
+    // Interest callbacks compare against the stored row, including hidden devices.
+    // getByName() drops expired and blocklisted rows and would treat them as new.
+    static func sameBattery(name: String, level: Int, charging: Int) -> Bool {
+        devicesLock.lock()
+        defer { devicesLock.unlock() }
+        guard let existing = storedDevices.first(where: { $0.deviceName == name }) else { return false }
+        return existing.batteryLevel == level && existing.isCharging == charging
+    }
+
+    /// Set by the app: called (on main) when any device's charging state flips,
+    /// so the widget can be refreshed immediately instead of on the periodic timer.
+    static var onChargingStateChange: (() -> Void)?
     
+    static func touchDevice(name: String) {
+        devicesLock.lock()
+        defer { devicesLock.unlock() }
+        if let index = storedDevices.firstIndex(where: { $0.deviceName == name }) {
+            storedDevices[index].lastUpdate = Date().timeIntervalSince1970
+        }
+    }
+
     static func hideDevice(_ name: String) {
-        for index in Devices.indices {
-            if Devices[index].deviceName == name {
-                Devices[index].isHidden = true
+        devicesLock.lock()
+        defer { devicesLock.unlock() }
+        for index in storedDevices.indices {
+            if storedDevices[index].deviceName == name {
+                storedDevices[index].isHidden = true
             }
         }
     }
     
     static func unhideDevice(_ name: String) {
-        for index in Devices.indices {
-            if Devices[index].deviceName == name {
-                Devices[index].isHidden = false
+        devicesLock.lock()
+        defer { devicesLock.unlock() }
+        for index in storedDevices.indices {
+            if storedDevices[index].deviceName == name {
+                storedDevices[index].isHidden = false
             }
         }
     }
@@ -100,7 +146,12 @@ class AirBatteryModel {
         let disappearTime = (ud.object(forKey: "disappearTime") ?? 20) as! Int
         let blackList = (ud.object(forKey: "blackList") ?? []) as! [String]
         let now = Double(Date().timeIntervalSince1970)
-        var list = (reverse ? Array(Devices.reversed()) : Devices).filter { (now - $0.lastUpdate < Double(disappearTime * 60)) }
+        // Snapshot the shared array while holding the lock, then do the
+        // filtering outside it so no lock is held while touching UserDefaults.
+        devicesLock.lock()
+        let snapshot = reverse ? Array(storedDevices.reversed()) : storedDevices
+        devicesLock.unlock()
+        var list = snapshot.filter { (now - $0.lastUpdate < Double(disappearTime * 60)) }
         if !noFilter { list = list.filter { !blackList.contains($0.deviceName) && !$0.isHidden } }
         var newList: [Device] = list.filter({ $0.parentName == thisMac })
         for d in list {
@@ -140,14 +191,22 @@ class AirBatteryModel {
     }
     
     static func getJsonURL() -> URL {
-        var url: URL
+        // Prefer the widget container Documents path. Ad-hoc re-signing that
+        // drops app-sandbox makes the widget's .documentDirectory resolve to
+        // ~/Documents instead of the container — which looks like an empty
+        // 8-ring widget even though Containers/.../data.json is populated.
+        let containerURL = fd.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Containers/\(key)/Data/Documents/data.json")
         let bundleIdentifier = Bundle.main.bundleIdentifier
         if bundleIdentifier == key {
-            url = fd.urls(for: .documentDirectory, in: .userDomainMask).first!.appendingPathComponent("data.json")
+            let docURL = fd.urls(for: .documentDirectory, in: .userDomainMask).first!
+                .appendingPathComponent("data.json")
+            if fd.fileExists(atPath: docURL.path) { return docURL }
+            if fd.fileExists(atPath: containerURL.path) { return containerURL }
+            return docURL
         } else {
-            url = fd.urls(for: .libraryDirectory, in: .userDomainMask).first!.appendingPathComponent("Containers/\(key)/Data/Documents/data.json")
+            return containerURL
         }
-        return url
     }
     
     static func writeData(){
@@ -159,7 +218,12 @@ class AirBatteryModel {
         if ibStatus.hasBattery { devices.insert(ib2ab(ibStatus), at: 0) }
         do {
             let jsonData = try JSONEncoder().encode(devices)
-            try jsonData.write(to: getJsonURL())
+            // This lock only serializes writers inside this process. The widget
+            // extension is a separate process; .atomic is what prevents its
+            // readers from seeing a partially written file.
+            writeLock.lock()
+            defer { writeLock.unlock() }
+            try jsonData.write(to: getJsonURL(), options: .atomic)
         } catch {
             print("Write JSON error：\(error)")
         }

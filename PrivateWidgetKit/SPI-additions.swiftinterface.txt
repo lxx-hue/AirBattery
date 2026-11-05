@@ -1,0 +1,16 @@
+
+@available(macOS 14.0, *)
+public enum WidgetBackgroundStyle : Swift.Int, Swift.Hashable, Swift.Codable, Swift.Comparable {
+  case opaque
+  case blur
+  case transparent
+  public init?(rawValue: Swift.Int)
+  public typealias RawValue = Swift.Int
+  public var rawValue: Swift.Int { get }
+  public static func < (a: WidgetKit.WidgetBackgroundStyle, b: WidgetKit.WidgetBackgroundStyle) -> Swift.Bool
+}
+@available(macOS 14.0, *)
+extension SwiftUI.WidgetConfiguration {
+  public func preferredBackgroundStyle(_ style: WidgetKit.WidgetBackgroundStyle) -> some SwiftUI.WidgetConfiguration
+
+}

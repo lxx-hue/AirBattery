@@ -10,10 +10,27 @@ import IOBluetooth
 
 class SPBluetoothDataModel {
     static var shared: SPBluetoothDataModel = SPBluetoothDataModel()
-    var data: String = "{}"
+    private let dataLock = NSLock()
+    private var storedData: String = "{}"
+
+    // `system_profiler` results are refreshed from several background scan
+    // queues and read by the BT/BLE parsers. String has value semantics, but
+    // concurrent read/write of the same stored property is still a data race.
+    var data: String {
+        get {
+            dataLock.lock()
+            defer { dataLock.unlock() }
+            return storedData
+        }
+        set {
+            dataLock.lock()
+            defer { dataLock.unlock() }
+            storedData = newValue
+        }
+    }
     
     func refeshData(completion: (String) -> Void, error: (() -> Void)? = nil) {
-        if let result = process(path: "/usr/sbin/system_profiler", arguments: ["SPBluetoothDataType", "-json"]) {
+        if let result = process(path: "/usr/sbin/system_profiler", arguments: ["SPBluetoothDataType", "-json"], timeout: 30) {
             data = result
             completion(result)
         } else {
@@ -120,11 +137,12 @@ class MagicBattery {
         return def
     }
     
-    func readMagicBattery(object: io_object_t) {
+    func readMagicBattery(object: io_object_t, publishIfChanged: Bool = false) {
         var mac = ""
         var type = "hid"
         var status = 0
         var percent = 0
+        var sawPercent = false
         var productName = ""
         let lastUpdate = Date().timeIntervalSince1970
         if let productProperty = IORegistryEntryCreateCFProperty(object, "DeviceAddress" as CFString, kCFAllocatorDefault, 0) {
@@ -137,6 +155,7 @@ class MagicBattery {
         }
         if let percentProperty = IORegistryEntryCreateCFProperty(object, "BatteryPercent" as CFString, kCFAllocatorDefault, 0) {
             percent = percentProperty.takeRetainedValue() as! Int
+            sawPercent = true
         }
         if let productProperty = IORegistryEntryCreateCFProperty(object, "Product" as CFString, kCFAllocatorDefault, 0) {
             productName = productProperty.takeRetainedValue() as! String
@@ -152,8 +171,17 @@ class MagicBattery {
                 productName = getDeviceName(mac, productName)
             }
         }
-        if !productName.contains("Internal"){
-            AirBatteryModel.updateDevice(Device(deviceID: mac, deviceType: type, deviceName: productName, batteryLevel: percent, isCharging: status, parentName: deviceName, lastUpdate: lastUpdate))
+        if productName.contains("Internal") { return }
+        // The periodic scan still refreshes lastUpdate. An interest hint writes
+        // only when the mapped percent or charging flag actually differs.
+        if publishIfChanged {
+            if !sawPercent { return }
+            if AirBatteryModel.sameBattery(name: productName, level: percent, charging: status) { return }
+        }
+        AirBatteryModel.updateDevice(Device(deviceID: mac, deviceType: type, deviceName: productName, batteryLevel: percent, isCharging: status, parentName: deviceName, lastUpdate: lastUpdate))
+        if publishIfChanged {
+            print("ℹ️ Mouse power \(productName) \(percent)% status=\(status)")
+            scheduleLocalPowerWidgetReload()
         }
     }
 
@@ -328,23 +356,45 @@ class MagicBattery {
         }
     }
     
+    private struct PairedDeviceSnapshot {
+        let name: String?
+        let address: String?
+        let isConnected: Bool
+        let isAppleDevice: Bool
+        let batteryPercentSingle: Int?
+    }
+
+    // IOBluetoothDevice is not thread-safe. Enumerate and read every property
+    // on the main thread, then hand only value snapshots to the caller.
+    private func pairedDeviceSnapshots() -> [PairedDeviceSnapshot] {
+        let readDevices: () -> [PairedDeviceSnapshot] = {
+            guard let devices = IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] else { return [] }
+            return devices.map { device in
+                PairedDeviceSnapshot(
+                    name: device.name,
+                    address: device.addressString,
+                    isConnected: device.isConnected(),
+                    isAppleDevice: device.isAppleDevice,
+                    batteryPercentSingle: device.getValue(forKey: "batteryPercentSingle") as? Int
+                )
+            }
+        }
+        if Thread.isMainThread { return readDevices() }
+        return DispatchQueue.main.sync { readDevices() }
+    }
+
     func getIOBTBattery() {
-        if let devices = IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] {
-            for device in devices {
-                let name = device.name
-                let address = device.addressString
-                let connected = device.isConnected()
-                //let usb = device.getValue(forKey: "isPluggedOverUSB") as! Bool ?? false
-                
-                if connected && !device.isAppleDevice {
-                    if let battery = device.getValue(forKey: "batteryPercentSingle") as? Int, let name = name, let address = address, battery != 0 {
-                        let type = getDeviceType(address.replacingOccurrences(of: "-", with: ":").uppercased(),"")
-                        AirBatteryModel.updateDevice(Device(deviceID: address, deviceType: type, deviceName: name, batteryLevel: battery, isCharging: 0, lastUpdate: Date().timeIntervalSince1970))
-                    }
-                    //let left = device.getValue(forKey: "batteryPercentLeft") as? Int
-                    //let right = device.getValue(forKey: "batteryPercentRight") as? Int
-                    //let _case = device.getValue(forKey: "batteryPercentCase") as? Int
+        for device in pairedDeviceSnapshots() {
+            //let usb = device.getValue(forKey: "isPluggedOverUSB") as! Bool ?? false
+
+            if device.isConnected && !device.isAppleDevice {
+                if let battery = device.batteryPercentSingle, let name = device.name, let address = device.address, battery != 0 {
+                    let type = getDeviceType(address.replacingOccurrences(of: "-", with: ":").uppercased(),"")
+                    AirBatteryModel.updateDevice(Device(deviceID: address, deviceType: type, deviceName: name, batteryLevel: battery, isCharging: 0, lastUpdate: Date().timeIntervalSince1970))
                 }
+                //let left = device.getValue(forKey: "batteryPercentLeft") as? Int
+                //let right = device.getValue(forKey: "batteryPercentRight") as? Int
+                //let _case = device.getValue(forKey: "batteryPercentCase") as? Int
             }
         }
     }

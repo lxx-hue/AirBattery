@@ -15,6 +15,7 @@
 		18283DAB2B854779009B1B13 /* Preview Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 18283DAA2B854779009B1B13 /* Preview Assets.xcassets */; };
 		18283DB12B8549C6009B1B13 /* AirBatteryHelper.app in CopyFiles */ = {isa = PBXBuildFile; fileRef = 18283DA12B854776009B1B13 /* AirBatteryHelper.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		18347DCA2B882C6500A78DF6 /* MagicBattery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18347DC92B882C6400A78DF6 /* MagicBattery.swift */; };
+		A1B2C0032E11000100AB1001 /* LocalPowerNotifications.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C0022E11000100AB1001 /* LocalPowerNotifications.swift */; };
 		18347DCE2B88417500A78DF6 /* BatteryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18347DCD2B88417500A78DF6 /* BatteryView.swift */; };
 		1841D4512AA6071C0022A1BE /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1841D4502AA6071C0022A1BE /* ContentView.swift */; };
 		1841D4562AA6071D0022A1BE /* Preview Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1841D4552AA6071D0022A1BE /* Preview Assets.xcassets */; };
@@ -126,6 +127,7 @@
 		18283DAC2B854779009B1B13 /* AirBatteryHelper.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = AirBatteryHelper.entitlements; sourceTree = "<group>"; };
 		18283DB22B8583A4009B1B13 /* AirBattery.entitlements */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.entitlements; path = AirBattery.entitlements; sourceTree = "<group>"; };
 		18347DC92B882C6400A78DF6 /* MagicBattery.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = MagicBattery.swift; sourceTree = "<group>"; };
+		A1B2C0022E11000100AB1001 /* LocalPowerNotifications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalPowerNotifications.swift; sourceTree = "<group>"; };
 		18347DCD2B88417500A78DF6 /* BatteryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BatteryView.swift; sourceTree = "<group>"; };
 		1841D44B2AA6071C0022A1BE /* AirBattery.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AirBattery.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		1841D4502AA6071C0022A1BE /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
@@ -328,6 +330,7 @@
 				1841D47C2AAA20F80022A1BE /* InternalBattery.swift */,
 				1895851A2B724DCD00108E5C /* IDeviceBattery.swift */,
 				18347DC92B882C6400A78DF6 /* MagicBattery.swift */,
+				A1B2C0022E11000100AB1001 /* LocalPowerNotifications.swift */,
 				185E382C2C2733B9005578EC /* BTDBattery.swift */,
 				18F615F22B763DD800873AA4 /* BLEBattery.swift */,
 				18F615F82B76439300873AA4 /* AirBatteryModel.swift */,
@@ -552,6 +555,7 @@
 				185E382D2C2733B9005578EC /* BTDBattery.swift in Sources */,
 				18347DCE2B88417500A78DF6 /* BatteryView.swift in Sources */,
 				18347DCA2B882C6500A78DF6 /* MagicBattery.swift in Sources */,
+				A1B2C0032E11000100AB1001 /* LocalPowerNotifications.swift in Sources */,
 				1841D47D2AAA20F80022A1BE /* InternalBattery.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -914,7 +918,6 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
 				CODE_SIGN_ENTITLEMENTS = widget/widget.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 163;
@@ -948,7 +951,6 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
 				CODE_SIGN_ENTITLEMENTS = widget/widget.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 163;

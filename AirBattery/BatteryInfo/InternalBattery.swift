@@ -19,7 +19,23 @@ struct iBattery {
 }
 
 class InternalBattery {
-    static var status: iBattery = getPowerState()
+    private static let statusLock = NSLock()
+    private static var storedStatus: iBattery = getPowerState()
+
+    // Written on the main thread by the status-bar timer but read from
+    // background scanner/widget refresh queues. Snapshot it atomically.
+    static var status: iBattery {
+        get {
+            statusLock.lock()
+            defer { statusLock.unlock() }
+            return storedStatus
+        }
+        set {
+            statusLock.lock()
+            defer { statusLock.unlock() }
+            storedStatus = newValue
+        }
+    }
     
     var name: String?
     var timeToFull: Int?

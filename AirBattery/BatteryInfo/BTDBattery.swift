@@ -11,7 +11,37 @@ import IOBluetooth
 
 class BTDBattery {
     var scanTimer: Timer?
-    static var allDevices = [String]()
+    private static let devicesLock = NSLock()
+    private static var storedDevices = [String]()
+    private struct ConnectedDeviceSnapshot {
+        let name: String?
+        let address: String?
+    }
+
+    // Touched by the detached scan threads and read by the periodic timer.
+    static var allDevices: [String] {
+        get {
+            devicesLock.lock()
+            defer { devicesLock.unlock() }
+            return storedDevices
+        }
+        set {
+            devicesLock.lock()
+            defer { devicesLock.unlock() }
+            storedDevices = newValue
+        }
+    }
+
+    static func rememberDevice(_ name: String) {
+        devicesLock.lock()
+        defer { devicesLock.unlock() }
+        if let index = storedDevices.firstIndex(of: name) {
+            storedDevices[index] = name
+        } else {
+            storedDevices.append(name)
+        }
+    }
+
     @AppStorage("readBTHID") var readBTHID = true
     
     func startScan() {
@@ -28,20 +58,29 @@ class BTDBattery {
                 let connects = BTDBattery.getConnected()
                 let names = BTDBattery.allDevices.filter({ connects.contains($0) })
                 for name in names {
-                    if var device = AirBatteryModel.getByName(name) {
-                        device.lastUpdate = Date().timeIntervalSince1970
-                        AirBatteryModel.updateDevice(device)
-                    }
+                    AirBatteryModel.touchDevice(name: name)
                 }
             }
         }
     }
     
+    // IOBluetoothDevice is not thread-safe. Read it on the main thread and
+    // return only value snapshots to the detached scan thread.
+    private static func connectedDeviceSnapshots() -> [ConnectedDeviceSnapshot] {
+        let readDevices: () -> [ConnectedDeviceSnapshot] = {
+            guard let devices = IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] else { return [] }
+            return devices.filter({ $0.isConnected() }).map { device in
+                ConnectedDeviceSnapshot(name: device.name, address: device.addressString)
+            }
+        }
+        if Thread.isMainThread { return readDevices() }
+        return DispatchQueue.main.sync { readDevices() }
+    }
+
     static func getConnected(mac: Bool = false) -> [String]{
-        guard var bluetoothDevices = IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] else { return [] }
-        bluetoothDevices = bluetoothDevices.filter({ $0.isConnected() })
+        let bluetoothDevices = connectedDeviceSnapshots()
         if mac {
-            let devices = bluetoothDevices.map({ ($0.addressString ?? "").uppercased().replacingOccurrences(of: "-", with: ":") })
+            let devices = bluetoothDevices.map({ ($0.address ?? "").uppercased().replacingOccurrences(of: "-", with: ":") })
             return devices.filter({ $0 != "" })
         }
         return bluetoothDevices.map({ $0.name ?? "" }).filter({ $0 != "" })
@@ -79,7 +118,7 @@ class BTDBattery {
             let status = (d["status"] as! String) == "+" ? 1 : 0
             if name == "" { name = "\(type) (\(mac))" }
             if connected.contains(mac) {
-                if let index = allDevices.firstIndex(of: name) { allDevices[index] = name } else { allDevices.append(name) }
+                BTDBattery.rememberDevice(name)
                 AirBatteryModel.updateDevice(Device(deviceID: mac, deviceType: type, deviceName: name, batteryLevel: min(100, max(0, level)), isCharging: status, parentName: parent, lastUpdate: Date().timeIntervalSince1970, realUpdate: isoFormatter.date(from: time)?.timeIntervalSince1970 ?? 0.0))
             }/* else {
                 if let index = allDevices.firstIndex(of: name) { allDevices.remove(at: index) }
